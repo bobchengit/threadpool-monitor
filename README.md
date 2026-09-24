@@ -134,7 +134,3 @@ MONITOR_CRYPTO_KEY=your-key-at-least-16-chars java -jar monitor-server-1.0.0.jar
 - 后端：Spring Boot 2.7.18、JDK 1.8、H2 Database
 - 前端：原生 Vue 3 + ECharts（本地 vendor 引入，无前端构建）
 - 存储：H2 嵌入式文件库，快照分批清理（每批 2 万行，FETCH FIRST 避免长事务锁表）
-
-## License
-
-MIT
