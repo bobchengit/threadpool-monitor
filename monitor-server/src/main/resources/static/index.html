@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>线程池监控中心 - 监控大屏</title>
+    <link rel="stylesheet" href="css/style.css?v=1.0.17">
+</head>
+<body>
+<div id="app">
+    <div class="topbar">
+        <div class="brand"><span class="logo">●</span>线程池监控中心</div>
+        <div class="spacer"></div>
+        <a class="nav-link active" href="index.html">监控大屏</a>
+        <a class="nav-link" href="datasources.html">数据源管理</a>
+    </div>
+
+    <div class="container">
+        <!-- 统计卡片（全局汇总） -->
+        <div class="stat-row">
+            <div class="stat-card">
+                <div class="num">{{ stats.total }}</div>
+                <div class="label">数据源总数</div>
+            </div>
+            <div class="stat-card green">
+                <div class="num">{{ stats.online }}</div>
+                <div class="label">在线</div>
+            </div>
+            <div class="stat-card red">
+                <div class="num">{{ stats.alertPools }}</div>
+                <div class="label">告警线程池</div>
+            </div>
+            <div class="stat-card" title="后端最近一次成功拉取任一数据源的时间（服务器时钟）。页面每 1~10 秒自动刷新面板；各数据源自身的拉取节奏由其刷新间隔配置决定">
+                <div class="num" style="font-size:16px; padding-top:6px">{{ AppUtil.fmtTime(latestSuccess) }}</div>
+                <div class="label">数据更新于</div>
+            </div>
+        </div>
+
+        <!-- 数据源 tab（单选：一次只渲染一个数据源，控制 DOM 规模） -->
+        <div class="filter-bar">
+            <span class="filter-label">数据源：</span>
+            <span v-for="s in state.sources" :key="s.id" class="ds-tab"
+                  :class="{ active: state.activeDsId === s.id }" @click="selectDs(s.id)">
+                <span class="dot" :style="{ background: AppUtil.statusMeta(s.status, s.enabled).color }"></span>
+                {{ s.name }}
+                <span v-if="s.alertPoolCount > 0" class="tab-badge">{{ s.alertPoolCount }}</span>
+            </span>
+            <span class="spacer" style="flex:1"></span>
+            <span class="filter-label">时间范围：</span>
+            <span v-for="r in ranges" :key="r.ms" class="chip" :class="{ active: state.rangeMs === r.ms }"
+                  @click="setRange(r.ms)">{{ r.label }}</span>
+        </div>
+
+        <!-- 空态 -->
+        <div v-if="!state.sources.length" class="empty-tip">
+            暂无可展示的数据源，请先到 <a href="datasources.html">数据源管理</a> 添加并启用
+        </div>
+
+        <!-- 当前 tab 数据源 × 线程池卡片 -->
+        <div v-if="activeSource" class="ds-section">
+            <div class="ds-head">
+                <span class="ds-name">{{ activeSource.name }}</span>
+                <span class="badge" :class="activeSource.status">
+                    <span class="dot"></span>{{ AppUtil.statusMeta(activeSource.status, activeSource.enabled).text }}
+                </span>
+                <span class="ds-sub">
+                    每 {{ activeSource.pullIntervalSec }}s 拉取 · 最近成功 {{ AppUtil.fmtTime(activeSource.lastSuccessTime) }}
+                </span>
+                <span v-if="activeSource.lastErrorMsg && activeSource.status === 'FAIL'" class="error-text"
+                      :title="activeSource.lastErrorMsg">
+                    {{ truncate(activeSource.lastErrorMsg, 60) }}
+                </span>
+                <span class="spacer"></span>
+                <!-- 布局切换：流式=自适应网格 / 平铺=横向平铺+自动换行 -->
+                <span class="layout-switch">
+                    <button class="btn mini" :class="{ primary: state.layout === 'flow' }"
+                            @click="setLayout('flow')">流式</button>
+                    <button class="btn mini" :class="{ primary: state.layout === 'tiled' }"
+                            @click="setLayout('tiled')">平铺</button>
+                </span>
+                <button class="btn mini" @click="showAnalysis()"
+                        :disabled="state.analysisLoadingId === activeSource.id">
+                    {{ state.analysisLoadingId === activeSource.id ? '分析中…' : '容量分析' }}
+                </button>
+            </div>
+            <!-- 线程池筛选：不指定 = 展示全部 -->
+            <div class="pool-filter">
+                <span class="filter-label">线程池：</span>
+                <span class="chip" :class="{ active: !state.pickedPools.length }" @click="clearPools">全部</span>
+                <span v-for="p in activeSource.pools" :key="p.poolName" class="chip"
+                      :class="{ active: state.pickedPools.includes(p.poolName) }" @click="togglePool(p.poolName)">
+                    {{ p.poolName }}
+                </span>
+            </div>
+            <div class="pool-grid" :class="state.layout">
+                <div v-for="p in visiblePools" :key="activeSource.id + '-' + p.poolName" class="pool-card"
+                     :class="{ alerting: p.alert }">
+                    <div class="card-head">
+                        <span class="pool-name" :title="p.poolName">{{ p.poolName }}</span>
+                        <span class="spacer"></span>
+                        <span class="pool-sub host" :title="p.appName + '@' + p.instanceIp">{{ p.appName }}@{{ p.instanceIp }}</span>
+                        <span v-if="p.alert" class="badge FAIL"><span class="dot"></span>队列告警</span>
+                    </div>
+                    <div class="chart gauge" :id="'gauge-' + AppUtil.safeId(activeSource.id + '-' + p.poolName)"></div>
+                    <div class="chart-title">线程活动（活跃 / 当前线程，虚线为最大线程数）</div>
+                    <div class="chart line" :id="'active-' + AppUtil.safeId(activeSource.id + '-' + p.poolName)"></div>
+                    <div class="chart-title">队列堆积（告警线为 队列容量 × {{ activeSource.queueAlertThreshold }}%）</div>
+                    <div class="chart line" :id="'queue-' + AppUtil.safeId(activeSource.id + '-' + p.poolName)"></div>
+                    <div class="chart-title">任务吞吐（已完成任务差值 / 秒）</div>
+                    <div class="chart line" :id="'tput-' + AppUtil.safeId(activeSource.id + '-' + p.poolName)"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 线程池容量分析报告弹窗（实时计算：打开即请求，完成后渲染） -->
+        <div v-if="state.analysisOpen" class="modal-mask" @click.self="closeAnalysis">
+            <div class="modal analysis-modal">
+                <div class="modal-header">
+                    <span>线程池容量分析 · {{ activeSource ? activeSource.name : '' }}</span>
+                    <button class="close" @click="closeAnalysis">×</button>
+                </div>
+                <div class="modal-body">
+                    <!-- 分析中：骨架提示（实时计算，每次打开都重新请求） -->
+                    <div v-if="state.analysisLoadingId" class="an-loading">
+                        <span class="dot-pulse"></span>正在分析，请稍候…
+                    </div>
+                    <!-- 失败态：错误信息 + 重试按钮，不再使用 alert 阻塞 -->
+                    <template v-else-if="activeAnalysis && activeAnalysis.error">
+                        <div class="an-error">分析失败：{{ activeAnalysis.error }}</div>
+                        <div class="an-error-ops">
+                            <button class="btn primary mini" @click="showAnalysis(true)">重试</button>
+                            <button class="btn mini" @click="closeAnalysis">关闭</button>
+                        </div>
+                    </template>
+                    <template v-else-if="activeAnalysis">
+                        <!-- 全局概览条（固定不随列表滚动） -->
+                        <div class="an-overview">
+                            <div class="an-overview-stats">
+                                <span class="an-kv">窗口 <b>{{ activeAnalysis.windowMinutes }}</b> 分钟</span>
+                                <span class="an-kv">CPU <b>{{ activeAnalysis.cpuCores == null ? '未上报' : activeAnalysis.cpuCores }}</b> 核</span>
+                                <span class="an-kv">共 <b>{{ analysisPools.length }}</b> 池</span>
+                                <span class="spacer" style="flex:1"></span>
+                                <span v-for="(n, lv) in levelCounts" :key="lv" v-show="n > 0"
+                                      class="an-level" :class="lv">{{ levelText(lv) }} × {{ n }}</span>
+                            </div>
+                            <div class="an-summary-text">{{ activeAnalysis.summary }}</div>
+                        </div>
+                        <!-- 池导航（固定）：池多时快速定位，点击滚动 + 闪烁提示 -->
+                        <div v-if="analysisPools.length > 1" class="an-nav">
+                            <span class="filter-label">定位：</span>
+                            <span v-for="p in analysisPools" :key="'nav-' + p.poolName" class="chip"
+                                  @click="jumpTo(p.poolName)">{{ truncate(p.poolName, 14) }}</span>
+                        </div>
+                        <!-- 池报告列表（内部滚动，弹窗高度可控） -->
+                        <div class="an-list">
+                            <div v-for="p in analysisPools" :key="p.poolName" class="an-item"
+                                 :class="'lv-' + p.level" :id="'anp-' + AppUtil.safeId(p.poolName)">
+                                <div class="an-item-head">
+                                    <span class="an-pool">{{ p.poolName }}</span>
+                                    <span v-if="p.taskProfile !== levelText(p.level)" class="an-profile" :class="p.taskProfile">{{ p.taskProfile }}</span>
+                                    <span class="an-level" :class="p.level">{{ levelText(p.level) }}</span>
+                                </div>
+                                <div class="an-metrics">
+                                    <div class="an-metric"><div class="k">线程 核心/最大</div>
+                                        <div class="v">{{ p.corePoolSize }} / {{ p.maxPoolSize }}</div></div>
+                                    <div class="an-metric"><div class="k">峰值活跃</div>
+                                        <div class="v">{{ p.maxActive }}（{{ p.activeRatioMax }}%）</div></div>
+                                    <div class="an-metric"><div class="k">平均活跃</div>
+                                        <div class="v">{{ p.avgActive }}（{{ p.activeRatioAvg }}%）</div></div>
+                                    <div class="an-metric"><div class="k">队列峰值</div>
+                                        <div class="v">{{ p.maxQueueUsage }}%</div></div>
+                                    <div class="an-metric"><div class="k">吞吐（峰值）</div>
+                                        <div class="v">{{ p.throughput }}（{{ p.peakThroughput }}）/s</div></div>
+                                    <div class="an-metric"><div class="k">单线程吞吐</div>
+                                        <div class="v">{{ p.perThreadTput }}/s</div></div>
+                                </div>
+                                <div class="an-conclusion">{{ p.conclusion }}</div>
+                                <ul v-if="p.suggestions && p.suggestions.length" class="an-suggestions">
+                                    <li v-for="(s, i) in p.suggestions" :key="i">{{ s }}</li>
+                                </ul>
+                            </div>
+                            <!-- 筛选后的池在报告中无数据（如窗口内无快照）时给出提示 -->
+                            <div v-if="!analysisPools.length" class="an-note">
+                                当前选中的线程池在分析窗口内没有报告数据，可切换为"全部"或扩大分析窗口
+                            </div>
+                        </div>
+                    </template>
+                    </div>
+                </div>
+            </div>
+        </div>
+</div>
+
+<script src="vendor/echarts.min.js?v=1.0.15"></script>
+<script src="vendor/vue.global.prod.js?v=1.0.15"></script>
+<script src="js/common.js?v=1.0.15"></script>
+<script src="js/dashboard.js?v=1.0.16"></script>
+</body>
+</html>

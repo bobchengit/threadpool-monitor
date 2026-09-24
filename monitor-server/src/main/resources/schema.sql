@@ -1,0 +1,45 @@
+-- 数据源配置表（AUTH_SECRET 存 AES-GCM 密文）
+CREATE TABLE IF NOT EXISTS tpm_data_source (
+    ID                    BIGINT AUTO_INCREMENT PRIMARY KEY,
+    NAME                  VARCHAR(100)  NOT NULL,
+    BASE_URL              VARCHAR(500)  NOT NULL,
+    METRICS_PATH          VARCHAR(200)  NOT NULL DEFAULT '/api/threadpool/metrics',
+    AUTH_TYPE             VARCHAR(20)   NOT NULL DEFAULT 'NONE',
+    AUTH_USERNAME         VARCHAR(100),
+    AUTH_SECRET           VARCHAR(1000),
+    AUTH_HEADER_NAME      VARCHAR(100),
+    PULL_INTERVAL_SEC     INT           NOT NULL DEFAULT 30,
+    QUEUE_ALERT_THRESHOLD INT           NOT NULL DEFAULT 80,
+    ENABLED               BOOLEAN       NOT NULL DEFAULT TRUE,
+    STATUS                VARCHAR(20)   NOT NULL DEFAULT 'UNKNOWN',
+    LAST_SUCCESS_TIME     TIMESTAMP,
+    LAST_ERROR_MSG        VARCHAR(500),
+    REMARK                VARCHAR(255),
+    CREATED_AT            TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UPDATED_AT            TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT UK_TPM_DS_NAME UNIQUE (NAME)
+);
+
+-- 指标快照表（一行 = 某数据源某线程池某次拉取的指标）
+CREATE TABLE IF NOT EXISTS tpm_metric_snapshot (
+    ID                   BIGINT AUTO_INCREMENT PRIMARY KEY,
+    DATASOURCE_ID        BIGINT       NOT NULL,
+    APP_NAME             VARCHAR(100),
+    INSTANCE_IP          VARCHAR(64),
+    POOL_NAME            VARCHAR(100) NOT NULL,
+    METRIC_TIME          TIMESTAMP    NOT NULL,
+    CORE_POOL_SIZE       INT          NOT NULL,
+    POOL_SIZE            INT          NOT NULL,
+    ACTIVE_COUNT         INT          NOT NULL,
+    MAX_POOL_SIZE        INT          NOT NULL,
+    QUEUE_SIZE           INT          NOT NULL,
+    QUEUE_REMAINING      INT          NOT NULL,
+    QUEUE_CAPACITY       INT          NOT NULL,
+    COMPLETED_TASK_COUNT BIGINT       NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS IDX_SNAP_QUERY ON tpm_metric_snapshot (DATASOURCE_ID, POOL_NAME, METRIC_TIME);
+CREATE INDEX IF NOT EXISTS IDX_SNAP_TIME ON tpm_metric_snapshot (METRIC_TIME);
+
+-- 已有库的增量列（H2 幂等）：容量分析需要的机器核数
+ALTER TABLE tpm_metric_snapshot ADD COLUMN IF NOT EXISTS CPU_CORES INT;

@@ -1,0 +1,35 @@
+server:
+  port: 18080
+
+spring:
+  application:
+    name: threadpool-monitor-server
+  datasource:
+    driver-class-name: org.h2.Driver
+    # H2 嵌入式文件库，数据文件存放在运行目录 ./data/tpm 下
+    url: jdbc:h2:file:./data/tpm;DB_CLOSE_ON_EXIT=FALSE
+    username: sa
+    password: ""
+  sql:
+    init:
+      # schema.sql 全部使用 IF NOT EXISTS，每次启动幂等执行
+      mode: always
+  web:
+    resources:
+      cache:
+        cachecontrol:
+          # 静态资源走协商缓存（304），避免发版后浏览器用旧 JS
+          no-cache: true
+  jackson:
+    default-property-inclusion: non_null
+
+monitor:
+  # 历史快照保留天数（每日 03:30 清理），可用 monitor.retention-cron 覆盖清理时间
+  retention-days: 3
+  crypto:
+    # 鉴权密钥加密密钥（至少 16 字符），生产环境请用环境变量 MONITOR_CRYPTO_KEY 覆盖
+    key: "tpm-default-aes-key"
+
+logging:
+  level:
+    io.itbob.threadpool: info

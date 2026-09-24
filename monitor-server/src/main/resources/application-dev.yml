@@ -1,0 +1,10 @@
+# 开发环境附加配置：启动方式 --spring.profiles.active=dev
+spring:
+  h2:
+    console:
+      enabled: true
+      path: /h2-console
+
+logging:
+  level:
+    io.itbob.threadpool: debug

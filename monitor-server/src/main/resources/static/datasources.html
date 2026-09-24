@@ -1,0 +1,348 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>线程池监控中心 - 数据源管理</title>
+    <link rel="stylesheet" href="css/style.css?v=1.0.0">
+</head>
+<body>
+<div id="app">
+    <div class="topbar">
+        <div class="brand"><span class="logo">●</span>线程池监控中心</div>
+        <div class="spacer"></div>
+        <a class="nav-link" href="index.html">监控大屏</a>
+        <a class="nav-link active" href="datasources.html">数据源管理</a>
+    </div>
+
+    <div class="container">
+        <div class="filter-bar">
+            <button class="btn primary" @click="openCreate">+ 新增数据源</button>
+            <button class="btn" @click="loadList">刷新</button>
+            <span class="muted">共 {{ list.length }} 个</span>
+        </div>
+
+        <div class="table-wrap">
+            <table class="list">
+                <thead>
+                    <tr>
+                        <th style="width: 48px">ID</th>
+                        <th>名称</th>
+                        <th>地址</th>
+                        <th style="width: 88px">鉴权</th>
+                        <th style="width: 64px">频率(秒)</th>
+                        <th style="width: 64px">告警阈值</th>
+                        <th style="width: 64px">启用</th>
+                        <th style="width: 80px">状态</th>
+                        <th style="width: 150px">最近成功</th>
+                        <th>最近错误</th>
+                        <th style="width: 290px">操作</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr v-for="row in list" :key="row.id">
+                        <td>{{ row.id }}</td>
+                        <td>{{ row.name }}</td>
+                        <td><span :title="row.baseUrl + row.metricsPath">{{ row.baseUrl }}{{ row.metricsPath }}</span></td>
+                        <td>{{ row.authType }}<span v-if="row.authType !== 'NONE'"> · {{ row.authSecretSet ? '已设置' : '未设置' }}</span></td>
+                        <td>{{ row.pullIntervalSec }}</td>
+                        <td>{{ row.queueAlertThreshold }}%</td>
+                        <td>
+                            <span class="badge" :class="row.enabled ? 'OK' : 'OFF'">
+                                <span class="dot"></span>{{ row.enabled ? '启用' : '停用' }}
+                            </span>
+                        </td>
+                        <td>
+                            <span class="badge" :class="row.status">
+                                <span class="dot"></span>{{ AppUtil.statusMeta(row.status, row.enabled).text }}
+                            </span>
+                        </td>
+                        <td>{{ AppUtil.fmtDateTime(row.lastSuccessTime) }}</td>
+                        <td class="error-text" :title="row.lastErrorMsg || ''">
+                            {{ row.lastErrorMsg ? truncate(row.lastErrorMsg, 50) : '-' }}
+                        </td>
+                        <td class="ops">
+                            <button class="btn mini" @click="testConn(row)">测试</button>
+                            <button class="btn mini" @click="pullNow(row)">拉取</button>
+                            <button class="btn mini" @click="openEdit(row)">编辑</button>
+                            <button class="btn mini" @click="openClean(row)">清理</button>
+                            <button class="btn mini danger" @click="del(row)">删除</button>
+                        </td>
+                    </tr>
+                </tbody>
+            </table>
+            <div v-if="!list.length" class="empty-tip" style="border: none; padding: 40px;">
+                还没有数据源，点击「新增数据源」开始
+            </div>
+        </div>
+
+        <!-- 新增/编辑模态框 -->
+        <div class="modal-mask" v-if="showModal" @click.self="closeModal">
+            <div class="modal">
+                <div class="modal-header">
+                    <span>{{ editing.id ? '编辑数据源' : '新增数据源' }}</span>
+                    <button class="close" @click="closeModal">×</button>
+                </div>
+                <div class="modal-body">
+                    <div class="form-grid">
+                        <div class="form-item">
+                            <label>名称 <span class="req">*</span></label>
+                            <input v-model="form.name" placeholder="如 demo-a" maxlength="50">
+                        </div>
+                        <div class="form-item">
+                            <label>基础地址 <span class="req">*</span></label>
+                            <input v-model="form.baseUrl" placeholder="如 http://192.168.1.10:8080" maxlength="500">
+                        </div>
+                        <div class="form-item">
+                            <label>指标路径</label>
+                            <input v-model="form.metricsPath" placeholder="留空则用 /api/threadpool/metrics" maxlength="200">
+                        </div>
+                        <div class="form-item">
+                            <label>刷新频率（秒）</label>
+                            <input type="number" v-model.number="form.pullIntervalSec" min="1" max="3600">
+                        </div>
+                        <div class="form-item">
+                            <label>鉴权方式</label>
+                            <select v-model="form.authType" @change="onAuthTypeChange">
+                                <option value="NONE">无</option>
+                                <option value="BEARER">Bearer Token</option>
+                                <option value="BASIC">Basic 认证</option>
+                                <option value="HEADER">自定义 Header</option>
+                            </select>
+                        </div>
+                        <div class="form-item">
+                            <label>队列告警阈值（%）</label>
+                            <input type="number" v-model.number="form.queueAlertThreshold" min="1" max="100">
+                        </div>
+                        <div class="form-item" v-if="form.authType === 'BASIC'">
+                            <label>Basic 用户名 <span class="req">*</span></label>
+                            <input v-model="form.authUsername" autocomplete="off">
+                        </div>
+                        <div class="form-item" v-if="form.authType === 'HEADER'">
+                            <label>Header 名称 <span class="req">*</span></label>
+                            <input v-model="form.authHeaderName" placeholder="如 X-Api-Key">
+                        </div>
+                        <div class="form-item full" v-if="form.authType !== 'NONE'">
+                            <label>
+                                {{ form.authType === 'BASIC' ? 'Basic 密码' : (form.authType === 'HEADER' ? 'Header 值' : 'Token') }}
+                                <span v-if="!form.authType.startsWith('NONE')" class="req">*</span>
+                                <span v-if="editing.id" class="muted" style="font-weight:normal">（留空保留原值）</span>
+                            </label>
+                            <input type="password" v-model="form.authSecret" autocomplete="new-password">
+                        </div>
+                        <div class="form-item">
+                            <label>启用</label>
+                            <select v-model="form.enabled">
+                                <option :value="true">启用</option>
+                                <option :value="false">停用</option>
+                            </select>
+                        </div>
+                        <div class="form-item full">
+                            <label>备注</label>
+                            <input v-model="form.remark" maxlength="100">
+                        </div>
+                    </div>
+                    <div v-if="formError" class="error-text" style="margin-top:10px">{{ formError }}</div>
+                </div>
+                <div class="modal-footer">
+                    <button class="btn" @click="closeModal">取消</button>
+                    <button class="btn primary" @click="save">{{ editing.id ? '保存' : '创建' }}</button>
+                </div>
+            </div>
+        </div>
+        <!-- 数据清理模态框：先展示该数据源的数据量，再选择保留范围 -->
+        <div class="modal-mask" v-if="showClean" @click.self="closeClean">
+            <div class="modal" style="max-width: 480px">
+                <div class="modal-header">
+                    <span>清理快照数据 · {{ cleanRow.name }}</span>
+                    <button class="close" @click="closeClean">×</button>
+                </div>
+                <div class="modal-body">
+                    <div class="muted" style="margin-bottom: 12px">
+                        当前快照 <b>{{ cleanStats ? cleanStats.snapshotCount : '…' }}</b> 条<template v-if="cleanStats && cleanStats.earliestTime">，时间跨度 {{ AppUtil.fmtDateTime(cleanStats.earliestTime) }} ~ {{ AppUtil.fmtDateTime(cleanStats.latestTime) }}</template>
+                    </div>
+                    <div class="form-item">
+                        <label>清理范围</label>
+                        <select v-model.number="cleanKeepDays">
+                            <option :value="1">保留最近 1 天</option>
+                            <option :value="3">保留最近 3 天</option>
+                            <option :value="7">保留最近 7 天</option>
+                            <option :value="30">保留最近 30 天</option>
+                            <option :value="0">全部清空（不可恢复）</option>
+                        </select>
+                    </div>
+                    <div class="error-text">仅清理历史快照，不影响数据源配置与自动拉取；删除后不可恢复，请确认。</div>
+                </div>
+                <div class="modal-footer">
+                    <button class="btn" @click="closeClean">取消</button>
+                    <button class="btn danger" @click="doClean" :disabled="cleaning">{{ cleaning ? '清理中…' : '确认清理' }}</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div v-if="toast" class="toast" :class="toast.type">{{ toast.msg }}</div>
+</div>
+
+<script src="vendor/vue.global.prod.js?v=1.0.0"></script>
+<script src="js/common.js?v=1.0.0"></script>
+<script>
+const { createApp, ref, onMounted } = Vue;
+
+createApp({
+    setup() {
+        const list = ref([]);
+        const showModal = ref(false);
+        const editing = ref({});
+        const form = ref({});
+        const formError = ref('');
+        const toast = ref(null);
+        const showClean = ref(false);
+        const cleanRow = ref({});
+        const cleanStats = ref(null);
+        const cleanKeepDays = ref(3);
+        const cleaning = ref(false);
+
+        function emptyForm() {
+            return {
+                name: '', baseUrl: '', metricsPath: '/api/threadpool/metrics',
+                authType: 'NONE', authUsername: '', authSecret: '', authHeaderName: '',
+                pullIntervalSec: 30, queueAlertThreshold: 80, enabled: true, remark: ''
+            };
+        }
+
+        async function loadList() {
+            try {
+                list.value = await AppUtil.api('/api/datasources');
+            } catch (e) { showToast('加载失败: ' + e.message, 'error'); }
+        }
+
+        function openCreate() {
+            editing.value = {};
+            form.value = emptyForm();
+            formError.value = '';
+            showModal.value = true;
+        }
+
+        function openEdit(row) {
+            editing.value = row;
+            form.value = {
+                name: row.name, baseUrl: row.baseUrl, metricsPath: row.metricsPath,
+                authType: row.authType, authUsername: row.authUsername, authSecret: '',
+                authHeaderName: row.authHeaderName,
+                pullIntervalSec: row.pullIntervalSec, queueAlertThreshold: row.queueAlertThreshold,
+                enabled: row.enabled, remark: row.remark
+            };
+            formError.value = '';
+            showModal.value = true;
+        }
+
+        function closeModal() { showModal.value = false; }
+
+        function onAuthTypeChange() {
+            // 仅清空与当前鉴权类型无关的字段，减少误提交
+            if (form.value.authType !== 'BASIC') { form.value.authUsername = ''; }
+            if (form.value.authType !== 'HEADER') { form.value.authHeaderName = ''; }
+        }
+
+        async function save() {
+            formError.value = '';
+            try {
+                if (editing.value.id) {
+                    await AppUtil.api('/api/datasources/' + editing.value.id, { method: 'PUT', body: form.value });
+                    showToast('保存成功', 'success');
+                } else {
+                    await AppUtil.api('/api/datasources', { method: 'POST', body: form.value });
+                    showToast('创建成功', 'success');
+                }
+                showModal.value = false;
+                await loadList();
+            } catch (e) { formError.value = e.message; }
+        }
+
+        async function del(row) {
+            if (!confirm('确认删除数据源 "' + row.name + '"？\n该数据源的历史快照也会一并清除。')) return;
+            try {
+                await AppUtil.api('/api/datasources/' + row.id, { method: 'DELETE' });
+                showToast('已删除', 'success');
+                await loadList();
+            } catch (e) { showToast('删除失败: ' + e.message, 'error'); }
+        }
+
+        async function testConn(row) {
+            try {
+                const r = await AppUtil.api('/api/datasources/' + row.id + '/test', { method: 'POST' });
+                if (r.ok) {
+                    showToast('连通正常：HTTP ' + r.httpStatus + '，发现 ' + r.poolCount + ' 个线程池，耗时 ' + r.latencyMs + 'ms', 'success');
+                } else {
+                    showToast('测试失败：' + (r.errorMsg || '未知错误') + '（HTTP ' + (r.httpStatus || '-') + '，耗时 ' + r.latencyMs + 'ms）', 'error');
+                }
+                await loadList();
+            } catch (e) { showToast('测试请求失败: ' + e.message, 'error'); }
+        }
+
+        async function pullNow(row) {
+            try {
+                const r = await AppUtil.api('/api/datasources/' + row.id + '/pull', { method: 'POST' });
+                if (r.ok) {
+                    showToast('拉取成功：落库 ' + r.rowCount + ' 行，耗时 ' + r.latencyMs + 'ms', 'success');
+                } else {
+                    showToast('拉取失败：' + (r.errorMsg || '未知错误'), 'error');
+                }
+                await loadList();
+            } catch (e) { showToast('拉取请求失败: ' + e.message, 'error'); }
+        }
+
+        /** 打开清理弹窗：拉取该数据源的快照统计供预览 */
+        async function openClean(row) {
+            cleanRow.value = row;
+            cleanKeepDays.value = 3;
+            cleanStats.value = null;
+            showClean.value = true;
+            try {
+                const arr = await AppUtil.api('/api/maintenance/stats?datasourceId=' + row.id);
+                cleanStats.value = (arr && arr.length) ? arr[0] : { snapshotCount: 0 };
+            } catch (e) {
+                cleanStats.value = null;
+                showToast('统计数据加载失败: ' + e.message, 'error');
+            }
+        }
+
+        function closeClean() { if (!cleaning.value) { showClean.value = false; } }
+
+        async function doClean() {
+            const scopeText = cleanKeepDays.value === 0 ? '全部快照' : (cleanKeepDays.value + ' 天前的快照');
+            if (!confirm('确认清理 "' + cleanRow.value.name + '" 的' + scopeText + '？删除后不可恢复。')) return;
+            cleaning.value = true;
+            try {
+                const r = await AppUtil.api('/api/maintenance/cleanup?datasourceId=' + cleanRow.value.id
+                        + '&keepDays=' + cleanKeepDays.value, { method: 'POST' });
+                showToast('清理完成：删除 ' + r.deleted + ' 行快照', 'success');
+                showClean.value = false;
+            } catch (e) { showToast('清理失败: ' + e.message, 'error'); }
+            finally { cleaning.value = false; }
+        }
+
+        function showToast(msg, type) {
+            toast.value = { msg: msg, type: type };
+            setTimeout(() => { toast.value = null; }, 3500);
+        }
+
+        function truncate(s, n) {
+            return s && s.length > n ? s.slice(0, n) + '…' : s;
+        }
+
+        onMounted(loadList);
+
+        return {
+            list, showModal, editing, form, formError, toast,
+            showClean, cleanRow, cleanStats, cleanKeepDays, cleaning,
+            openCreate, openEdit, closeModal, onAuthTypeChange, save, del, testConn, pullNow,
+            openClean, closeClean, doClean,
+            loadList, truncate, AppUtil
+        };
+    }
+}).mount('#app');
+</script>
+</body>
+</html>

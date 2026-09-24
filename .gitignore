@@ -1,0 +1,25 @@
+target/
+data/
+*.log
+logs/
+
+# H2 数据库文件（防止运行目录变化导致库文件落在仓库其他位置）
+*.mv.db
+*.trace.db
+*.lock.db
+
+# 环境变量与密钥
+.env
+*.env
+
+# IDE：IntelliJ / VS Code / Eclipse
+.idea/
+*.iml
+.vscode/
+.settings/
+.project
+.classpath
+
+# OS
+.DS_Store
+Thumbs.db
